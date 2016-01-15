@@ -3,6 +3,9 @@
 #endif
 
 #include "handler.h"
+#include "my_global.h"
+#include "my_base.h"
+#include "thr_lock.h"
 
 class Agbase_share : public Handler_share {
 	public:
