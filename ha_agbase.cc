@@ -420,10 +420,6 @@ int ha_agbase::rnd_next(uchar *buf)
 
   if (d_dir != NULL)
   {
-    // No null bytes to pack because all fields are NOT NULL
-
-    //uchar *to = (uchar*)buffer.ptr();
-    
     if ((dirent = readdir(d_dir)) != NULL)
     {
       while(!has_gif_extension(dirent->d_name))
@@ -446,21 +442,26 @@ int ha_agbase::rnd_next(uchar *buf)
           sizes[0] = file->SHeight;
           sizes[1] = file->SWidth;
 
-          char str1[3] = "42";
-
+          // No null bytes to pack because all fields are NOT NULL
           memset(buf, 0, table->s->null_bytes);
 
           i = 0;
-          for (Field **field = table->field; *field; field++, i++)
+          for (Field **field = table->field; *field; field++)
           {
             buffer.length(0);
 
-            buffer.append(str1);
+            buffer.append(dirent->d_name);
 
-            if (!((*field)->is_null()))
+            if (!strcmp((*field)->field_name, "name"))
             {
-              //(*field)->store(buffer.ptr(), buffer.length(), buffer.charset());
-              (*field)->store(sizes[i]);
+              (*field)->store(buffer.ptr(), buffer.length(), buffer.charset());
+            }
+            else
+            {
+              if (!((*field)->is_null()))
+              {
+                (*field)->store(sizes[i++]);
+              }
             }
           }
         }
