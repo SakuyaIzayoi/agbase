@@ -374,6 +374,7 @@ int ha_agbase::rnd_init(bool scan)
 {
   DBUG_ENTER("ha_agbase::rnd_init");
   d_dir = opendir("/home/ag/misc/agbase");
+  stats.records = 0;
   DBUG_RETURN(0);
 }
 
@@ -459,6 +460,7 @@ int ha_agbase::rnd_next(uchar *buf)
               (*field)->store(file->SWidth);
         }
       }
+      stats.records++;
     }
     else
       rc = HA_ERR_END_OF_FILE;
