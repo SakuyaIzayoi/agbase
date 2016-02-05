@@ -457,12 +457,11 @@ int ha_agbase::rnd_next(uchar *buf)
               (*field)->store(buffer.ptr(), buffer.length(), buffer.charset());
             }
             else
-            {
-              if (!((*field)->is_null()))
-              {
-                (*field)->store(sizes[i++]);
-              }
-            }
+              if(!strcmp((*field)->field_name, "height"))
+                (*field)->store(file->SHeight);
+              else
+                if (!strcmp((*field)->field_name, "width"))
+                  (*field)->store(file->SWidth);
           }
         }
       }
