@@ -400,9 +400,7 @@ int ha_agbase::rnd_end()
 int ha_agbase::rnd_next(uchar *buf)
 {
   int rc = HA_ERR_END_OF_FILE;
-  int i;
   struct dirent *dirent;
-  uint16 sizes[2];
   my_bitmap_map *org_bitmap;
   String dirstring;
 
@@ -422,6 +420,7 @@ int ha_agbase::rnd_next(uchar *buf)
   {
     if ((dirent = readdir(d_dir)) != NULL)
     {
+      // Only operate on gif files
       while(!has_gif_extension(dirent->d_name))
       {
         if (dirent == NULL)
@@ -431,38 +430,33 @@ int ha_agbase::rnd_next(uchar *buf)
         }
         dirent = readdir(d_dir);
       }
-      if (has_gif_extension(dirent->d_name))
+
+      // Prepeare the directory string
+      dirstring.append("/home/ag/misc/agbase/");
+      dirstring.append(dirent->d_name);
+      GifFileType *file = DGifOpenFileName(dirstring.c_ptr());
+
+      if (file != NULL)
       {
-        dirstring.append("/home/ag/misc/agbase/");
-        dirstring.append(dirent->d_name);
-        GifFileType *file = DGifOpenFileName(dirstring.c_ptr());
+        // No null bytes to pack because all fields are NOT NULL
+        memset(buf, 0, table->s->null_bytes);
 
-        if (file != NULL)
+        for (Field **field = table->field; *field; field++)
         {
-          sizes[0] = file->SHeight;
-          sizes[1] = file->SWidth;
+          buffer.length(0);
 
-          // No null bytes to pack because all fields are NOT NULL
-          memset(buf, 0, table->s->null_bytes);
+          buffer.append(dirent->d_name);
 
-          i = 0;
-          for (Field **field = table->field; *field; field++)
+          if (!strcmp((*field)->field_name, "name"))
           {
-            buffer.length(0);
-
-            buffer.append(dirent->d_name);
-
-            if (!strcmp((*field)->field_name, "name"))
-            {
-              (*field)->store(buffer.ptr(), buffer.length(), buffer.charset());
-            }
-            else
-              if(!strcmp((*field)->field_name, "height"))
-                (*field)->store(file->SHeight);
-              else
-                if (!strcmp((*field)->field_name, "width"))
-                  (*field)->store(file->SWidth);
+            (*field)->store(buffer.ptr(), buffer.length(), buffer.charset());
           }
+          else
+            if(!strcmp((*field)->field_name, "height"))
+              (*field)->store(file->SHeight);
+            else
+            if (!strcmp((*field)->field_name, "width"))
+              (*field)->store(file->SWidth);
         }
       }
     }
