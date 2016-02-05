@@ -408,11 +408,6 @@ int ha_agbase::rnd_next(uchar *buf)
   DBUG_ENTER("ha_agbase::rnd_next");
   MYSQL_READ_ROW_START(table_share->db.str, table_share->table_name.str, TRUE);
 
-  //mysql_mutex_lock(&agbase_mutex);
-
-// TODO: Remove debugging statement here
-  DBUG_PRINT("info", ("TEST DEBUG PRINT"));
-
   rc = 0;
 
   org_bitmap = dbug_tmp_use_all_columns(table, table->write_set);
@@ -472,7 +467,6 @@ int ha_agbase::rnd_next(uchar *buf)
 
 end:
   dbug_tmp_restore_column_map(table->write_set, org_bitmap);
-  //mysql_mutex_unlock(&agbase_mutex);
   MYSQL_READ_ROW_DONE(rc)
   DBUG_RETURN(rc);
 }
