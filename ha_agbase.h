@@ -6,6 +6,10 @@
 #include "my_global.h"
 #include "my_base.h"
 #include "thr_lock.h"
+#include "dirent.h"
+#include <string>
+#include <sys/stat.h>
+#include <sql_string.h>
 
 class Agbase_share : public Handler_share {
 	public:
@@ -24,6 +28,11 @@ class ha_agbase : public handler
 	THR_LOCK_DATA	lock;
 	Agbase_share	*share;
 	Agbase_share	*get_share();
+        DIR             *d_dir;
+        uint64          file_index;
+        uint64          num_records;
+        String          buffer;
+        uchar byte_buffer[IO_SIZE];
 
 	public:
 		ha_agbase(handlerton *hton, TABLE_SHARE *table_arg);
@@ -37,7 +46,9 @@ class ha_agbase : public handler
 		/* Engine is statement capable */
 		ulonglong table_flags() const
 		{
-			return HA_BINLOG_STMT_CAPABLE;
+			return (HA_BINLOG_STMT_CAPABLE | HA_NO_TRANSACTIONS |
+                          HA_NO_AUTO_INCREMENT | HA_BINLOG_ROW_CAPABLE |
+                          HA_REC_NOT_IN_SEQ | HA_NO_BLOBS);
 		}
 
 		/* Bitmap of flags that indicate how the storage engine implements
@@ -91,6 +102,9 @@ class ha_agbase : public handler
 		int delete_table(const char *from);
 		int create(const char *name, TABLE *form,
 					HA_CREATE_INFO *create_info);
+
+                // Utilities
+                bool has_gif_extension(char const *name);
 
 		enum_alter_inplace_result
 		check_if_supported_inplace_alter(TABLE *altered_table,

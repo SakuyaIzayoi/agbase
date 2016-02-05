@@ -6,12 +6,17 @@
 #include "ha_agbase.h"
 #include <mysql/plugin.h>
 #include "sql_class.h"
+#include <gif_lib.h>
+#include <iostream>
+#include <my_global.h>
+#include <my_dbug.h>
 
 static handler *agbase_create_handler(handlerton *hton,
 										TABLE_SHARE *table,
 										MEM_ROOT *mem_root);
 
 handlerton *agbase_hton;
+mysql_mutex_t agbase_mutex;
 
 static MYSQL_THDVAR_ULONG(varopt_default, PLUGIN_VAR_RQCMDARG,
 		"default value of the VAROPT table function", NULL, NULL,
@@ -48,10 +53,11 @@ ha_create_table_option agbase_field_option_list[]=
 };
 
 #ifdef HAVE_PSI_INTERFACE
-static PSI_mutex_key ag_key_mutex_Agbase_share_mutex;
+static PSI_mutex_key ag_key_mutex_agbase, ag_key_mutex_Agbase_share_mutex;
 
 static PSI_mutex_info all_agbase_mutexes[]=
 {
+        { &ag_key_mutex_agbase, "agbase", PSI_FLAG_GLOBAL },
 	{ &ag_key_mutex_Agbase_share_mutex, "Agbase_share::mutex", 0 }
 };
 
@@ -92,6 +98,8 @@ static int agbase_init_func(void *p)
 	agbase_hton->field_options = agbase_field_option_list;
 	agbase_hton->tablefile_extensions = ha_agbase_exts;
 
+        mysql_mutex_init(ag_key_mutex_agbase, &agbase_mutex, MY_MUTEX_INIT_FAST);
+
 	DBUG_RETURN(0);
 }
 
@@ -124,7 +132,9 @@ static handler* agbase_create_handler(handlerton *hton,
 
 ha_agbase::ha_agbase(handlerton *hton, TABLE_SHARE *table_arg)
   :handler(hton, table_arg)
-{}
+{
+  buffer.set((char*)byte_buffer, IO_SIZE, &my_charset_bin);
+}
 
 
 /**
@@ -363,12 +373,14 @@ int ha_agbase::index_last(uchar *buf)
 int ha_agbase::rnd_init(bool scan)
 {
   DBUG_ENTER("ha_agbase::rnd_init");
+  d_dir = opendir("/home/ag/misc/agbase");
   DBUG_RETURN(0);
 }
 
 int ha_agbase::rnd_end()
 {
   DBUG_ENTER("ha_agbase::rnd_end");
+  closedir(d_dir);
   DBUG_RETURN(0);
 }
 
@@ -387,9 +399,77 @@ int ha_agbase::rnd_end()
 */
 int ha_agbase::rnd_next(uchar *buf)
 {
-  int rc;
+  int rc = HA_ERR_END_OF_FILE;
+  int i;
+  struct dirent *dirent;
+  uint16 sizes[2];
+  my_bitmap_map *org_bitmap;
+
   DBUG_ENTER("ha_agbase::rnd_next");
-  rc= HA_ERR_END_OF_FILE;
+  MYSQL_READ_ROW_START(table_share->db.str, table_share->table_name.str, TRUE);
+
+  mysql_mutex_lock(&agbase_mutex);
+
+// TODO: Remove debugging statement here
+  DBUG_PRINT("info", ("TEST DEBUG PRINT"));
+
+  rc = 0;
+
+  org_bitmap = dbug_tmp_use_all_columns(table, table->write_set);
+
+  if (d_dir != NULL)
+  {
+    // No null bytes to pack because all fields are NOT NULL
+
+    //uchar *to = (uchar*)buffer.ptr();
+    
+    if ((dirent = readdir(d_dir)) != NULL)
+    {
+      if (has_gif_extension(dirent->d_name))
+      {
+        GifFileType *file = DGifOpenFileName(dirent->d_name);
+
+        //if (file != NULL)
+        {
+          //sizes[0] = file->SHeight;
+          //sizes[1] = file->SWidth;
+
+          char str1[3] = "42";
+
+          memset(buf, 0, table->s->null_bytes);
+
+          i = 0;
+          for (Field **field = table->field; *field; field++, i++)
+          {
+            buffer.length(0);
+
+            buffer.append(str1);
+
+            if (!((*field)->is_null()))
+              //to = (*field)->pack(to, (uchar*)sizes[i] + (*field)->offset(table->record[0]));
+              (*field)->store(buffer.ptr(), buffer.length(), buffer.charset());
+          }
+        }
+        //else
+        //{
+          ////error
+          //rc = HA_ERR_END_OF_FILE;
+          //goto end;
+        //}
+      }
+    }
+    else
+      rc = HA_ERR_END_OF_FILE;
+  }
+  else
+  {
+    rc = HA_ERR_END_OF_FILE;
+  }
+
+end:
+  dbug_tmp_restore_column_map(table->write_set, org_bitmap);
+  mysql_mutex_unlock(&agbase_mutex);
+  MYSQL_READ_ROW_DONE(rc)
   DBUG_RETURN(rc);
 }
 
@@ -747,6 +827,12 @@ ha_agbase::check_if_supported_inplace_alter(TABLE* altered_table,
   DBUG_RETURN(HA_ALTER_INPLACE_EXCLUSIVE_LOCK);
 }
 
+bool
+ha_agbase::has_gif_extension(char const *name)
+{
+  size_t len = strlen(name);
+  return len > 4 && strcmp(name + len - 4, ".gif") == 0;
+}
 
 struct st_mysql_storage_engine agbase_storage_engine=
 { MYSQL_HANDLERTON_INTERFACE_VERSION };
