@@ -404,6 +404,7 @@ int ha_agbase::rnd_next(uchar *buf)
   struct dirent *dirent;
   uint16 sizes[2];
   my_bitmap_map *org_bitmap;
+  String dirstring;
 
   DBUG_ENTER("ha_agbase::rnd_next");
   MYSQL_READ_ROW_START(table_share->db.str, table_share->table_name.str, TRUE);
@@ -425,14 +426,25 @@ int ha_agbase::rnd_next(uchar *buf)
     
     if ((dirent = readdir(d_dir)) != NULL)
     {
+      while(!has_gif_extension(dirent->d_name))
+      {
+        if (dirent == NULL)
+        {
+          rc = HA_ERR_END_OF_FILE;
+          goto end;
+        }
+        dirent = readdir(d_dir);
+      }
       if (has_gif_extension(dirent->d_name))
       {
-        GifFileType *file = DGifOpenFileName(dirent->d_name);
+        dirstring.append("/home/ag/misc/agbase/");
+        dirstring.append(dirent->d_name);
+        GifFileType *file = DGifOpenFileName(dirstring.c_ptr());
 
-        //if (file != NULL)
+        if (file != NULL)
         {
-          //sizes[0] = file->SHeight;
-          //sizes[1] = file->SWidth;
+          sizes[0] = file->SHeight;
+          sizes[1] = file->SWidth;
 
           char str1[3] = "42";
 
@@ -450,12 +462,6 @@ int ha_agbase::rnd_next(uchar *buf)
               (*field)->store(buffer.ptr(), buffer.length(), buffer.charset());
           }
         }
-        //else
-        //{
-          ////error
-          //rc = HA_ERR_END_OF_FILE;
-          //goto end;
-        //}
       }
     }
     else
