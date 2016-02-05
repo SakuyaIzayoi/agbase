@@ -458,8 +458,10 @@ int ha_agbase::rnd_next(uchar *buf)
             buffer.append(str1);
 
             if (!((*field)->is_null()))
-              //to = (*field)->pack(to, (uchar*)sizes[i] + (*field)->offset(table->record[0]));
-              (*field)->store(buffer.ptr(), buffer.length(), buffer.charset());
+            {
+              //(*field)->store(buffer.ptr(), buffer.length(), buffer.charset());
+              (*field)->store(sizes[i]);
+            }
           }
         }
       }
