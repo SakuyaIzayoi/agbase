@@ -8,12 +8,19 @@
 #include "sql_class.h"
 #include <gif_lib.h>
 #include <iostream>
+#include <memory>
 #include <my_global.h>
 #include <my_dbug.h>
 
+#include <my_decimal.h>
+#include <sql_udf.h>
+#include <item_row.h>
+#include <item_sum.h>
+#include <item_cmpfunc.h>
+
 static handler *agbase_create_handler(handlerton *hton,
-										TABLE_SHARE *table,
-										MEM_ROOT *mem_root);
+                                      TABLE_SHARE *table,
+                                      MEM_ROOT *mem_root);
 
 handlerton *agbase_hton;
 mysql_mutex_t agbase_mutex;
@@ -133,6 +140,7 @@ static handler* agbase_create_handler(handlerton *hton,
 ha_agbase::ha_agbase(handlerton *hton, TABLE_SHARE *table_arg)
   :handler(hton, table_arg)
 {
+  cond_check = false;
   buffer.set((char*)byte_buffer, IO_SIZE, &my_charset_bin);
 }
 
@@ -157,6 +165,7 @@ int ha_agbase::open(const char *name, int mode, uint test_if_locked)
   if (!(share = get_share()))
     DBUG_RETURN(1);
   thr_lock_data_init(&share->lock,&lock,NULL);
+  condition = NULL;
 
 #ifndef DBUG_OFF
   ha_table_option_struct *options= table->s->option_struct;
@@ -382,9 +391,11 @@ int ha_agbase::rnd_end()
 {
   DBUG_ENTER("ha_agbase::rnd_end");
   closedir(d_dir);
+  free(condition);
+  condition = NULL;
+  got_cond = false;
   DBUG_RETURN(0);
 }
-
 
 /**
   @brief
@@ -414,6 +425,7 @@ int ha_agbase::rnd_next(uchar *buf)
 
   if (d_dir != NULL)
   {
+    get:
     if ((dirent = readdir(d_dir)) != NULL)
     {
       // Only operate on gif files
@@ -427,32 +439,82 @@ int ha_agbase::rnd_next(uchar *buf)
         dirent = readdir(d_dir);
       }
 
-      // Prepeare the directory string
+      // Prepare the directory string
       dirstring.append("/home/ag/misc/agbase/");
       dirstring.append(dirent->d_name);
       GifFileType *file = DGifOpenFileName(dirstring.c_ptr());
 
       if (file != NULL)
       {
-        // No null bytes to pack because all fields are NOT NULL
+        bool row_is_match = false;
+
+        if (got_cond)
+        {
+          // Check through all fields for pushed condition
+          // TODO: Turn this mess into a helper function
+          for (Field **field = table->field; *field; field++)
+          {
+            if (!strcmp((*field)->field_name, cond_data->col_name))
+            {
+              switch(cond_data->cmp_type)
+              {
+                // As of now will not work with conditions on multiple fields
+                // It will short circuit and greedily accept a row
+                case CMP_EQ:
+                  if (!strcmp(cond_data->col_name, "width"))
+                    if (cond_data->value == file->SWidth)
+                      row_is_match = true;
+                  if (!strcmp(cond_data->col_name, "height"))
+                    if (cond_data->value == file->SHeight)
+                      row_is_match = true;
+                  break;
+                case CMP_GT:
+                  if (!strcmp(cond_data->col_name, "width"))
+                    if (cond_data->value > file->SWidth)
+                      row_is_match = true;
+                  if (!strcmp(cond_data->col_name, "height"))
+                    if (cond_data->value > file->SHeight)
+                      row_is_match = true;
+                  break;
+                case CMP_LT:
+                  if (!strcmp(cond_data->col_name, "width"))
+                    if (cond_data->value < file->SWidth)
+                      row_is_match = true;
+                  if (!strcmp(cond_data->col_name, "height"))
+                    if (cond_data->value < file->SHeight)
+                      row_is_match = true;
+                  break;
+                default:
+                  break;
+              }
+            }
+          }
+
+          if (!row_is_match)
+          {
+            dirstring.length(0);
+            goto get;
+          }
+        }
+
+        // Pack in the null bytes
         memset(buf, 0, table->s->null_bytes);
 
         for (Field **field = table->field; *field; field++)
         {
-          buffer.length(0);
+            buffer.length(0);
+            buffer.append(dirent->d_name);
 
-          buffer.append(dirent->d_name);
-
-          if (!strcmp((*field)->field_name, "name"))
-          {
-            (*field)->store(buffer.ptr(), buffer.length(), buffer.charset());
-          }
-          else
-            if(!strcmp((*field)->field_name, "height"))
-              (*field)->store(file->SHeight);
+            if (!strcmp((*field)->field_name, "name"))
+            {
+              (*field)->store(buffer.ptr(), buffer.length(), buffer.charset());
+            }
             else
-            if (!strcmp((*field)->field_name, "width"))
-              (*field)->store(file->SWidth);
+              if(!strcmp((*field)->field_name, "height"))
+                (*field)->store(file->SHeight);
+              else
+              if (!strcmp((*field)->field_name, "width"))
+                (*field)->store(file->SWidth);
         }
       }
       stats.records++;
@@ -747,6 +809,43 @@ int ha_agbase::create(const char *name, TABLE *table_arg,
   DBUG_RETURN(0);
 }
 
+const COND *ha_agbase::cond_push(const COND *cond)
+{
+  DBUG_ENTER("ha_agbase::cond_push");
+  cond_check = false; 
+
+  if (cond)
+  {
+    AGBASE_CONDITION *tmp_cond;
+    if (!(tmp_cond = (AGBASE_CONDITION*)malloc(sizeof(AGBASE_CONDITION*))))
+      DBUG_RETURN(cond);
+
+    tmp_cond->cond = (COND *)cond;
+    tmp_cond->next = condition;
+    condition = tmp_cond;
+  }
+
+  if (condition && !got_cond)
+  {
+    cond_data = (COND_CMP_DATA*)malloc(sizeof(COND_CMP_DATA*));
+    extract_condition(condition->cond, cond_data);
+  }
+  DBUG_RETURN(NULL);
+}
+
+void ha_agbase::cond_pop()
+{
+  DBUG_ENTER("ha_agbase::cond_pop");
+  if (condition)
+  {
+    if (cond_data)
+      free(cond_data);
+    AGBASE_CONDITION *tmp_cond = condition->next;
+    free(condition);
+    condition = tmp_cond;
+  }
+  DBUG_VOID_RETURN;
+}
 
 /**
   check_if_supported_inplace_alter() is used to ask the engine whether
@@ -825,11 +924,45 @@ ha_agbase::check_if_supported_inplace_alter(TABLE* altered_table,
   DBUG_RETURN(HA_ALTER_INPLACE_EXCLUSIVE_LOCK);
 }
 
-bool
-ha_agbase::has_gif_extension(char const *name)
+bool ha_agbase::has_gif_extension(char const *name)
 {
   size_t len = strlen(name);
   return len > 4 && strcmp(name + len - 4, ".gif") == 0;
+}
+
+// TODO: Implement pushed condition extraction
+int ha_agbase::extract_condition(const COND *cond, COND_CMP_DATA *data)
+{ 
+  int rc = 0;
+  DBUG_ENTER("ha_agbase::extract_condition");
+
+  Item_bool_func2 *tmp_cond = static_cast<Item_bool_func2 *>(const_cast<COND*>(cond));
+
+  switch(tmp_cond->functype()) {
+    case Item_func::EQ_FUNC:
+      data->cmp_type = CMP_EQ;
+      break;
+    case Item_func::LT_FUNC:
+      data->cmp_type = CMP_LT;
+      break;
+    case Item_func::GT_FUNC:
+      data->cmp_type = CMP_GT;
+      break;
+    default:
+      data->cmp_type = CMP_ERR;
+      break;
+  }
+
+  if (tmp_cond->is_bool_func())
+  {
+    Item **item = tmp_cond->arguments();
+    data->col_name = item[0]->field_name_or_null();
+    data->value = item[1]->val_int();
+  }
+
+  got_cond = true;
+
+  DBUG_RETURN(rc);
 }
 
 struct st_mysql_storage_engine agbase_storage_engine=

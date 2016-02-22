@@ -11,6 +11,11 @@
 #include <sys/stat.h>
 #include <sql_string.h>
 
+int string2my_decimal(uint mask, const String *str, my_decimal *d);
+
+
+enum                  COMPARISON_TYPE { CMP_ERR, CMP_EQ, CMP_LT, CMP_GT,
+                                        CMP_LE, CMP_GE };
 class Agbase_share : public Handler_share {
 	public:
 		mysql_mutex_t mutex;
@@ -23,6 +28,21 @@ class Agbase_share : public Handler_share {
 		}
 };
 
+typedef struct
+cond_cmp_data_s
+{
+  longlong              value;
+  COMPARISON_TYPE       cmp_type;
+  const char            *col_name;
+} COND_CMP_DATA;
+
+typedef struct
+agbase_condition_s
+{
+  COND *cond;
+  agbase_condition_s *next;
+} AGBASE_CONDITION;
+
 class ha_agbase : public handler
 {
 	THR_LOCK_DATA	lock;
@@ -32,7 +52,11 @@ class ha_agbase : public handler
         uint64          file_index;
         uint64          num_records;
         String          buffer;
-        uchar byte_buffer[IO_SIZE];
+        uchar                   byte_buffer[IO_SIZE];
+        AGBASE_CONDITION        *condition;
+        bool                    cond_check;
+        bool                    got_cond;
+        COND_CMP_DATA           *cond_data;
 
 	public:
 		ha_agbase(handlerton *hton, TABLE_SHARE *table_arg);
@@ -48,7 +72,8 @@ class ha_agbase : public handler
 		{
 			return (HA_BINLOG_STMT_CAPABLE | HA_NO_TRANSACTIONS |
                           HA_NO_AUTO_INCREMENT | HA_BINLOG_ROW_CAPABLE |
-                          HA_REC_NOT_IN_SEQ | HA_NO_BLOBS);
+                          HA_REC_NOT_IN_SEQ | HA_NO_BLOBS | HA_TABLE_SCAN_ON_INDEX | 
+                          HA_HAS_RECORDS);
 		}
 
 		/* Bitmap of flags that indicate how the storage engine implements
@@ -103,8 +128,13 @@ class ha_agbase : public handler
 		int create(const char *name, TABLE *form,
 					HA_CREATE_INFO *create_info);
 
+                // Engine Condition Pushdown
+                const COND *cond_push(const COND *cond);
+                void cond_pop();
+
                 // Utilities
                 bool has_gif_extension(char const *name);
+                int extract_condition(const COND *cond, COND_CMP_DATA *data);
 
 		enum_alter_inplace_result
 		check_if_supported_inplace_alter(TABLE *altered_table,
