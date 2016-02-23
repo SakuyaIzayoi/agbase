@@ -166,6 +166,7 @@ int ha_agbase::open(const char *name, int mode, uint test_if_locked)
     DBUG_RETURN(1);
   thr_lock_data_init(&share->lock,&lock,NULL);
   condition = NULL;
+  got_cond = false;
 
 #ifndef DBUG_OFF
   ha_table_option_struct *options= table->s->option_struct;
