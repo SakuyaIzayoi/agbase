@@ -6,7 +6,6 @@
 #include "ha_agbase.h"
 #include <mysql/plugin.h>
 #include "sql_class.h"
-#include <gif_lib.h>
 #include <iostream>
 #include <memory>
 #include <my_global.h>
@@ -447,75 +446,9 @@ int ha_agbase::rnd_next(uchar *buf)
 
       if (file != NULL)
       {
-        bool row_is_match = false;
-
         if (got_cond)
         {
-          // Check through all fields for pushed condition
-          // TODO: Turn this mess into a helper function
-          for (Field **field = table->field; *field; field++)
-          {
-            if (!strcmp((*field)->field_name, cond_data->col_name))
-            {
-              switch(cond_data->cmp_type)
-              {
-                // As of now will not work with conditions on multiple fields
-                // It will short circuit and greedily accept a row
-                case CMP_EQ:
-                  if (!strcmp(cond_data->col_name, "width"))
-                    if (file->SWidth == cond_data->value)
-                      row_is_match = true;
-                  if (!strcmp(cond_data->col_name, "height"))
-                    if (file->SHeight == cond_data->value)
-                      row_is_match = true;
-                  break;
-                case CMP_GT:
-                  if (!strcmp(cond_data->col_name, "width"))
-                    if (file->SWidth > cond_data->value)
-                      row_is_match = true;
-                  if (!strcmp(cond_data->col_name, "height"))
-                    if (file->SHeight > cond_data->value)
-                      row_is_match = true;
-                  break;
-                case CMP_LT:
-                  if (!strcmp(cond_data->col_name, "width"))
-                    if (file->SWidth < cond_data->value)
-                      row_is_match = true;
-                  if (!strcmp(cond_data->col_name, "height"))
-                    if (file->SHeight < cond_data->value)
-                      row_is_match = true;
-                  break;
-                case CMP_GE:
-                  if (!strcmp(cond_data->col_name, "width"))
-                    if (file->SWidth >= cond_data->value)
-                      row_is_match = true;
-                  if (!strcmp(cond_data->col_name, "height"))
-                    if (file->SHeight >= cond_data->value)
-                      row_is_match = true;
-                  break;
-                case CMP_LE:
-                  if (!strcmp(cond_data->col_name, "width"))
-                    if (file->SWidth <= cond_data->value)
-                      row_is_match = true;
-                  if (!strcmp(cond_data->col_name, "height"))
-                    if (file->SHeight <= cond_data->value)
-                      row_is_match = true;
-                  break;
-                case CMP_NE:
-                  if (!strcmp(cond_data->col_name, "width"))
-                    if (file->SWidth != cond_data->value)
-                      row_is_match = true;
-                  if (!strcmp(cond_data->col_name, "height"))
-                    if (file->SHeight != cond_data->value)
-                      row_is_match = true;
-                  break;
-                default:
-                  break;
-              }
-            }
-          }
-
-          if (!row_is_match)
+          if(!does_cond_accept_row(file))
           {
             dirstring.length(0);
             goto get;
@@ -997,6 +930,77 @@ int ha_agbase::extract_condition(const COND *cond, COND_CMP_DATA *data)
   got_cond = true;
 
   DBUG_RETURN(rc);
+}
+
+bool ha_agbase::does_cond_accept_row(GifFileType *file)
+{
+  bool row_is_match;
+  DBUG_ENTER("ha_agbase::does_cond_accept_row");
+          // Check through all fields for pushed condition
+          // TODO: Turn this mess into a helper function
+          for (Field **field = table->field; *field; field++)
+          {
+            if (!strcmp((*field)->field_name, cond_data->col_name))
+            {
+              switch(cond_data->cmp_type)
+              {
+                // As of now will not work with conditions on multiple fields
+                // It will short circuit and greedily accept a row
+                case CMP_EQ:
+                  if (!strcmp(cond_data->col_name, "width"))
+                    if (file->SWidth == cond_data->value)
+                      row_is_match = true;
+                  if (!strcmp(cond_data->col_name, "height"))
+                    if (file->SHeight == cond_data->value)
+                      row_is_match = true;
+                  break;
+                case CMP_GT:
+                  if (!strcmp(cond_data->col_name, "width"))
+                    if (file->SWidth > cond_data->value)
+                      row_is_match = true;
+                  if (!strcmp(cond_data->col_name, "height"))
+                    if (file->SHeight > cond_data->value)
+                      row_is_match = true;
+                  break;
+                case CMP_LT:
+                  if (!strcmp(cond_data->col_name, "width"))
+                    if (file->SWidth < cond_data->value)
+                      row_is_match = true;
+                  if (!strcmp(cond_data->col_name, "height"))
+                    if (file->SHeight < cond_data->value)
+                      row_is_match = true;
+                  break;
+                case CMP_GE:
+                  if (!strcmp(cond_data->col_name, "width"))
+                    if (file->SWidth >= cond_data->value)
+                      row_is_match = true;
+                  if (!strcmp(cond_data->col_name, "height"))
+                    if (file->SHeight >= cond_data->value)
+                      row_is_match = true;
+                  break;
+                case CMP_LE:
+                  if (!strcmp(cond_data->col_name, "width"))
+                    if (file->SWidth <= cond_data->value)
+                      row_is_match = true;
+                  if (!strcmp(cond_data->col_name, "height"))
+                    if (file->SHeight <= cond_data->value)
+                      row_is_match = true;
+                  break;
+                case CMP_NE:
+                  if (!strcmp(cond_data->col_name, "width"))
+                    if (file->SWidth != cond_data->value)
+                      row_is_match = true;
+                  if (!strcmp(cond_data->col_name, "height"))
+                    if (file->SHeight != cond_data->value)
+                      row_is_match = true;
+                  break;
+                default:
+                  break;
+              }
+            }
+          }
+
+  DBUG_RETURN(row_is_match);
 }
 
 struct st_mysql_storage_engine agbase_storage_engine=

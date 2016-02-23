@@ -10,6 +10,7 @@
 #include <string>
 #include <sys/stat.h>
 #include <sql_string.h>
+#include <gif_lib.h>
 
 int string2my_decimal(uint mask, const String *str, my_decimal *d);
 
@@ -131,6 +132,7 @@ class ha_agbase : public handler
                 // Engine Condition Pushdown
                 const COND *cond_push(const COND *cond);
                 void cond_pop();
+                bool does_cond_accept_row(GifFileType *file);
 
                 // Utilities
                 bool has_gif_extension(char const *name);
