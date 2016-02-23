@@ -15,7 +15,7 @@ int string2my_decimal(uint mask, const String *str, my_decimal *d);
 
 
 enum                  COMPARISON_TYPE { CMP_ERR, CMP_EQ, CMP_LT, CMP_GT,
-                                        CMP_LE, CMP_GE };
+                                        CMP_LE, CMP_GE, CMP_NE };
 class Agbase_share : public Handler_share {
 	public:
 		mysql_mutex_t mutex;

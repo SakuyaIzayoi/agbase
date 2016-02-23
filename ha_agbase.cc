@@ -485,6 +485,30 @@ int ha_agbase::rnd_next(uchar *buf)
                     if (file->SHeight < cond_data->value)
                       row_is_match = true;
                   break;
+                case CMP_GE:
+                  if (!strcmp(cond_data->col_name, "width"))
+                    if (file->SWidth >= cond_data->value)
+                      row_is_match = true;
+                  if (!strcmp(cond_data->col_name, "height"))
+                    if (file->SHeight >= cond_data->value)
+                      row_is_match = true;
+                  break;
+                case CMP_LE:
+                  if (!strcmp(cond_data->col_name, "width"))
+                    if (file->SWidth <= cond_data->value)
+                      row_is_match = true;
+                  if (!strcmp(cond_data->col_name, "height"))
+                    if (file->SHeight <= cond_data->value)
+                      row_is_match = true;
+                  break;
+                case CMP_NE:
+                  if (!strcmp(cond_data->col_name, "width"))
+                    if (file->SWidth != cond_data->value)
+                      row_is_match = true;
+                  if (!strcmp(cond_data->col_name, "height"))
+                    if (file->SHeight != cond_data->value)
+                      row_is_match = true;
+                  break;
                 default:
                   break;
               }
@@ -948,6 +972,15 @@ int ha_agbase::extract_condition(const COND *cond, COND_CMP_DATA *data)
       break;
     case Item_func::GT_FUNC:
       data->cmp_type = CMP_GT;
+      break;
+    case Item_func::LE_FUNC:
+      data->cmp_type = CMP_LE;
+      break;
+    case Item_func::GE_FUNC:
+      data->cmp_type = CMP_GE;
+      break;
+    case Item_func::NE_FUNC:
+      data->cmp_type = CMP_NE;
       break;
     default:
       data->cmp_type = CMP_ERR;
