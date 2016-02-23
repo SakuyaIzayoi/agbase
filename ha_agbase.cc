@@ -463,26 +463,26 @@ int ha_agbase::rnd_next(uchar *buf)
                 // It will short circuit and greedily accept a row
                 case CMP_EQ:
                   if (!strcmp(cond_data->col_name, "width"))
-                    if (cond_data->value == file->SWidth)
+                    if (file->SWidth == cond_data->value)
                       row_is_match = true;
                   if (!strcmp(cond_data->col_name, "height"))
-                    if (cond_data->value == file->SHeight)
+                    if (file->SHeight == cond_data->value)
                       row_is_match = true;
                   break;
                 case CMP_GT:
                   if (!strcmp(cond_data->col_name, "width"))
-                    if (cond_data->value > file->SWidth)
+                    if (file->SWidth > cond_data->value)
                       row_is_match = true;
                   if (!strcmp(cond_data->col_name, "height"))
-                    if (cond_data->value > file->SHeight)
+                    if (file->SHeight > cond_data->value)
                       row_is_match = true;
                   break;
                 case CMP_LT:
                   if (!strcmp(cond_data->col_name, "width"))
-                    if (cond_data->value < file->SWidth)
+                    if (file->SWidth < cond_data->value)
                       row_is_match = true;
                   if (!strcmp(cond_data->col_name, "height"))
-                    if (cond_data->value < file->SHeight)
+                    if (file->SHeight < cond_data->value)
                       row_is_match = true;
                   break;
                 default:
