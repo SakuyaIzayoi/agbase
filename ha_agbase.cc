@@ -391,8 +391,6 @@ int ha_agbase::rnd_end()
 {
   DBUG_ENTER("ha_agbase::rnd_end");
   closedir(d_dir);
-  free(condition);
-  condition = NULL;
   got_cond = false;
   DBUG_RETURN(0);
 }
@@ -926,6 +924,8 @@ int ha_agbase::extract_condition(const COND *cond, COND_CMP_DATA *data)
     data->col_name = item[0]->field_name_or_null();
     data->value = item[1]->val_int();
   }
+
+  cond_pop();
 
   got_cond = true;
 
