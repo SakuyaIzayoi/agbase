@@ -768,7 +768,7 @@ int ha_agbase::create(const char *name, TABLE *table_arg,
 const COND *ha_agbase::cond_push(const COND *cond)
 {
   DBUG_ENTER("ha_agbase::cond_push");
-  cond_check = false; 
+  cond_check = false;
 
   if (cond)
   {
@@ -888,7 +888,7 @@ bool ha_agbase::has_gif_extension(char const *name)
 
 // TODO: Implement pushed condition extraction
 int ha_agbase::extract_condition(const COND *cond, COND_CMP_DATA *data)
-{ 
+{
   int rc = 0;
   DBUG_ENTER("ha_agbase::extract_condition");
 
