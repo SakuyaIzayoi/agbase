@@ -57,7 +57,6 @@ class ha_agbase : public handler
         AGBASE_CONDITION        *condition;
         bool                    cond_check;
         bool                    got_cond;
-        COND_CMP_DATA           *cond_data;
 
 	public:
 		ha_agbase(handlerton *hton, TABLE_SHARE *table_arg);
@@ -133,6 +132,7 @@ class ha_agbase : public handler
                 const COND *cond_push(const COND *cond);
                 void cond_pop();
                 bool does_cond_accept_row(GifFileType *file);
+                bool does_item_fulfil_cond(COND_CMP_DATA &data, GifFileType *file);
 
                 // Utilities
                 bool has_gif_extension(char const *name);

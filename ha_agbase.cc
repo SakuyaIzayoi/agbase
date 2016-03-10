@@ -17,6 +17,15 @@
 #include <item_sum.h>
 #include <item_cmpfunc.h>
 
+COMPARISON_TYPE get_func_type(Item_func::Functype const);
+
+struct cond_tree_ctx
+{
+  bool ret;
+  GifFileType *file;
+  AGBASE_CONDITION *cond;
+};
+
 static handler *agbase_create_handler(handlerton *hton,
                                       TABLE_SHARE *table,
                                       MEM_ROOT *mem_root);
@@ -393,6 +402,46 @@ int ha_agbase::rnd_end()
   closedir(d_dir);
   got_cond = false;
   DBUG_RETURN(0);
+}
+
+void cond_tree_traverser(const Item *item, void *args)
+{
+  DBUG_ENTER("ha_agbase::cond_tree_traverser");
+  DBUG_VOID_RETURN;
+}
+
+bool ha_agbase::does_cond_accept_row(GifFileType *file)
+{
+  DBUG_ENTER("ha_agbase::does_cond_accept_row");
+  bool row_is_match = true;
+  Item_bool_func2 *tmp_cond = static_cast<Item_bool_func2 *>(const_cast<COND*>(condition->cond));
+
+  // Establish the condition tree traversal cond_tree_callback function
+  void (*cond_tree_callback)(const Item *, void*);
+  cond_tree_callback = &cond_tree_traverser;
+
+  if (tmp_cond->functype() != Item_func::COND_AND_FUNC &&
+      tmp_cond->functype() != Item_func::COND_OR_FUNC)
+  {
+    // Simple condition
+    Item **arguments;
+    COND_CMP_DATA simple_cond;
+    arguments = tmp_cond->arguments();
+    simple_cond.col_name = ((Item_field*)arguments[0])->name;
+    simple_cond.value = ((Item_int*)arguments[1])->value;
+    simple_cond.cmp_type = get_func_type(tmp_cond->functype());
+
+    row_is_match = does_item_fulfil_cond(simple_cond, file);
+  } else {
+    // do wacky tree traversal
+    cond_tree_ctx root_ctx;
+    root_ctx.ret = true;
+    root_ctx.cond = condition;
+
+    tmp_cond->traverse_cond(cond_tree_callback, &root_ctx, Item::PREFIX);
+  }
+
+  DBUG_RETURN(row_is_match);
 }
 
 /**
@@ -779,12 +828,7 @@ const COND *ha_agbase::cond_push(const COND *cond)
     tmp_cond->cond = (COND *)cond;
     tmp_cond->next = condition;
     condition = tmp_cond;
-  }
-
-  if (condition && !got_cond)
-  {
-    cond_data = (COND_CMP_DATA*)malloc(sizeof(COND_CMP_DATA*));
-    extract_condition(condition->cond, cond_data);
+    got_cond = true;
   }
   DBUG_RETURN(NULL);
 }
@@ -794,8 +838,6 @@ void ha_agbase::cond_pop()
   DBUG_ENTER("ha_agbase::cond_pop");
   if (condition)
   {
-    if (cond_data)
-      free(cond_data);
     AGBASE_CONDITION *tmp_cond = condition->next;
     free(condition);
     condition = tmp_cond;
@@ -886,121 +928,84 @@ bool ha_agbase::has_gif_extension(char const *name)
   return len > 4 && strcmp(name + len - 4, ".gif") == 0;
 }
 
-// TODO: Implement pushed condition extraction
-int ha_agbase::extract_condition(const COND *cond, COND_CMP_DATA *data)
+COMPARISON_TYPE get_func_type(Item_func::Functype const type)
 {
-  int rc = 0;
-  DBUG_ENTER("ha_agbase::extract_condition");
-
-  Item_bool_func2 *tmp_cond = static_cast<Item_bool_func2 *>(const_cast<COND*>(cond));
-
-  switch(tmp_cond->functype()) {
+  DBUG_ENTER("ha_agbase::get_func_type");
+  switch(type) {
     case Item_func::EQ_FUNC:
-      data->cmp_type = CMP_EQ;
-      break;
+      DBUG_RETURN(CMP_EQ);
     case Item_func::LT_FUNC:
-      data->cmp_type = CMP_LT;
-      break;
+      DBUG_RETURN(CMP_LT);
     case Item_func::GT_FUNC:
-      data->cmp_type = CMP_GT;
-      break;
+      DBUG_RETURN(CMP_GT);
     case Item_func::LE_FUNC:
-      data->cmp_type = CMP_LE;
-      break;
+      DBUG_RETURN(CMP_LE);
     case Item_func::GE_FUNC:
-      data->cmp_type = CMP_GE;
-      break;
+      DBUG_RETURN(CMP_GE);
     case Item_func::NE_FUNC:
-      data->cmp_type = CMP_NE;
-      break;
+      DBUG_RETURN(CMP_NE);
     default:
-      data->cmp_type = CMP_ERR;
-      break;
+      DBUG_RETURN(CMP_ERR);
   }
-
-  if (tmp_cond->is_bool_func())
-  {
-    Item **item = tmp_cond->arguments();
-    data->col_name = item[0]->field_name_or_null();
-    data->value = item[1]->val_int();
-  }
-
-  cond_pop();
-
-  got_cond = true;
-
-  DBUG_RETURN(rc);
 }
 
-bool ha_agbase::does_cond_accept_row(GifFileType *file)
+bool ha_agbase::does_item_fulfil_cond(COND_CMP_DATA &cmp_data, GifFileType *file)
 {
-  bool row_is_match;
-  DBUG_ENTER("ha_agbase::does_cond_accept_row");
-          // Check through all fields for pushed condition
-          // TODO: Turn this mess into a helper function
-          for (Field **field = table->field; *field; field++)
-          {
-            if (!strcmp((*field)->field_name, cond_data->col_name))
-            {
-              switch(cond_data->cmp_type)
-              {
-                // As of now will not work with conditions on multiple fields
-                // It will short circuit and greedily accept a row
-                case CMP_EQ:
-                  if (!strcmp(cond_data->col_name, "width"))
-                    if (file->SWidth == cond_data->value)
-                      row_is_match = true;
-                  if (!strcmp(cond_data->col_name, "height"))
-                    if (file->SHeight == cond_data->value)
-                      row_is_match = true;
-                  break;
-                case CMP_GT:
-                  if (!strcmp(cond_data->col_name, "width"))
-                    if (file->SWidth > cond_data->value)
-                      row_is_match = true;
-                  if (!strcmp(cond_data->col_name, "height"))
-                    if (file->SHeight > cond_data->value)
-                      row_is_match = true;
-                  break;
-                case CMP_LT:
-                  if (!strcmp(cond_data->col_name, "width"))
-                    if (file->SWidth < cond_data->value)
-                      row_is_match = true;
-                  if (!strcmp(cond_data->col_name, "height"))
-                    if (file->SHeight < cond_data->value)
-                      row_is_match = true;
-                  break;
-                case CMP_GE:
-                  if (!strcmp(cond_data->col_name, "width"))
-                    if (file->SWidth >= cond_data->value)
-                      row_is_match = true;
-                  if (!strcmp(cond_data->col_name, "height"))
-                    if (file->SHeight >= cond_data->value)
-                      row_is_match = true;
-                  break;
-                case CMP_LE:
-                  if (!strcmp(cond_data->col_name, "width"))
-                    if (file->SWidth <= cond_data->value)
-                      row_is_match = true;
-                  if (!strcmp(cond_data->col_name, "height"))
-                    if (file->SHeight <= cond_data->value)
-                      row_is_match = true;
-                  break;
-                case CMP_NE:
-                  if (!strcmp(cond_data->col_name, "width"))
-                    if (file->SWidth != cond_data->value)
-                      row_is_match = true;
-                  if (!strcmp(cond_data->col_name, "height"))
-                    if (file->SHeight != cond_data->value)
-                      row_is_match = true;
-                  break;
-                default:
-                  break;
-              }
-            }
-          }
-
-  DBUG_RETURN(row_is_match);
+  bool ret = false;
+  switch(cmp_data.cmp_type)
+  {
+    case CMP_EQ:
+      if (!strcmp(cmp_data.col_name, "width"))
+        if (file->SWidth == cmp_data.value)
+          ret = true;
+      if (!strcmp(cmp_data.col_name, "height"))
+        if (file->SHeight == cmp_data.value)
+          ret = true;
+      break;
+    case CMP_GT:
+      if (!strcmp(cmp_data.col_name, "width"))
+        if (file->SWidth > cmp_data.value)
+          ret = true;
+      if (!strcmp(cmp_data.col_name, "height"))
+        if (file->SHeight > cmp_data.value)
+          ret = true;
+      break;
+    case CMP_LT:
+      if (!strcmp(cmp_data.col_name, "width"))
+        if (file->SWidth < cmp_data.value)
+          ret = true;
+      if (!strcmp(cmp_data.col_name, "height"))
+        if (file->SHeight < cmp_data.value)
+          ret = true;
+      break;
+    case CMP_GE:
+      if (!strcmp(cmp_data.col_name, "width"))
+        if (file->SWidth >= cmp_data.value)
+          ret = true;
+      if (!strcmp(cmp_data.col_name, "height"))
+        if (file->SHeight >= cmp_data.value)
+          ret = true;
+      break;
+    case CMP_LE:
+      if (!strcmp(cmp_data.col_name, "width"))
+        if (file->SWidth <= cmp_data.value)
+          ret = true;
+      if (!strcmp(cmp_data.col_name, "height"))
+        if (file->SHeight <= cmp_data.value)
+          ret = true;
+      break;
+    case CMP_NE:
+      if (!strcmp(cmp_data.col_name, "width"))
+        if (file->SWidth != cmp_data.value)
+          ret = true;
+      if (!strcmp(cmp_data.col_name, "height"))
+        if (file->SHeight != cmp_data.value)
+          ret = true;
+      break;
+    default:
+      break;
+  }
+  return ret;
 }
 
 struct st_mysql_storage_engine agbase_storage_engine=
