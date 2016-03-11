@@ -826,7 +826,6 @@ const COND *ha_agbase::cond_push(const COND *cond)
       DBUG_RETURN(cond);
 
     tmp_cond->cond = (COND *)cond;
-    tmp_cond->next = condition;
     condition = tmp_cond;
     got_cond = true;
   }
