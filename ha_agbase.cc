@@ -18,6 +18,7 @@
 #include <item_cmpfunc.h>
 
 COMPARISON_TYPE get_func_type(Item_func::Functype const);
+void create_condition_queue(const Item *item, void *args);
 
 struct cond_tree_ctx
 {
@@ -407,6 +408,56 @@ int ha_agbase::rnd_end()
 void cond_tree_traverser(const Item *item, void *args)
 {
   DBUG_ENTER("ha_agbase::cond_tree_traverser");
+  DBUG_VOID_RETURN;
+}
+
+void create_condition_queue(const Item *item, void *args)
+{
+  DBUG_ENTER("ha_agbase::create_condition_queue");
+
+  if (item != NULL)
+  {
+    std::vector<const Item*> *cond_vec = (std::vector<const Item*>*)args;
+    Item::Type item_type = item->type();
+
+    if (item_type == Item::COND_ITEM)
+    {
+      DBUG_PRINT("info", ("Found Item::COND_ITEM"));
+    }
+
+    if (item_type == Item::FUNC_ITEM)
+    {
+      DBUG_PRINT("info", ("Found Item::FUNC_ITEM"));
+      // Item_bool_func2 *tmp_cond = static_cast<Item_bool_func2 *>(const_cast<Item*>(item));
+    }
+
+    if (item_type == Item::INT_ITEM)
+    {
+      DBUG_PRINT("info", ("Found Item::INT_ITEM"));
+      // Item_int *intitem = (Item_int*)item;
+    }
+
+    if (item_type == Item::FIELD_ITEM)
+    {
+      DBUG_PRINT("info", ("Found Item::FIELD_ITEM"));
+    }
+
+    if (item_type == Item::NULL_ITEM)
+    {
+      DBUG_PRINT("info", ("Found Item::NULL_ITEM"));
+    }
+
+    if (item_type == Item::STRING_ITEM)
+    {
+      DBUG_PRINT("info", ("Found Item::STRING_ITEM"));
+    }
+
+    cond_vec->push_back(item);
+
+  } else {
+    DBUG_PRINT("info", ("Found NULL Item"));
+  }
+
   DBUG_VOID_RETURN;
 }
 
@@ -828,6 +879,9 @@ const COND *ha_agbase::cond_push(const COND *cond)
     tmp_cond->cond = (COND *)cond;
     condition = tmp_cond;
     got_cond = true;
+
+    // Traverse the condition we got from the server and parse it into a linked list
+    condition->cond->traverse_cond(&create_condition_queue, &cond_vector, Item::PREFIX);
   }
   DBUG_RETURN(NULL);
 }

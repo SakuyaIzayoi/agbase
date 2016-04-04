@@ -11,6 +11,7 @@
 #include <sys/stat.h>
 #include <sql_string.h>
 #include <gif_lib.h>
+#include <vector>
 
 int string2my_decimal(uint mask, const String *str, my_decimal *d);
 
@@ -57,6 +58,7 @@ class ha_agbase : public handler
         AGBASE_CONDITION        *condition;
         bool                    cond_check;
         bool                    got_cond;
+        std::vector<const Item *>       cond_vector;
 
 	public:
 		ha_agbase(handlerton *hton, TABLE_SHARE *table_arg);
