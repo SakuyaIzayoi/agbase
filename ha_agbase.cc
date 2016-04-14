@@ -419,27 +419,37 @@ void create_condition_queue(const Item *item, void *args)
   {
     std::vector<const Item*> *cond_vec = (std::vector<const Item*>*)args;
     Item::Type item_type = item->type();
+    Item_func::Functype func_type;
 
     if (item_type == Item::COND_ITEM)
     {
       DBUG_PRINT("info", ("Found Item::COND_ITEM"));
+      Item_cond *cond_item = (Item_cond*)item;
+      func_type = cond_item->functype();
+      if (func_type == Item_func::COND_AND_FUNC)
+        DBUG_PRINT("info", ("Found COND_AND_FUNC"));
+      else
+        if (func_type == Item_func::COND_OR_FUNC)
+          DBUG_PRINT("info", ("Found COND_OR_FUNC"));
     }
 
     if (item_type == Item::FUNC_ITEM)
     {
-      DBUG_PRINT("info", ("Found Item::FUNC_ITEM"));
-      // Item_bool_func2 *tmp_cond = static_cast<Item_bool_func2 *>(const_cast<Item*>(item));
+      Item_func *func_item = (Item_func*)item;
+      func_type = func_item->functype();
+      DBUG_PRINT("info", ("Found Item::FUNC_ITEM = [%s]", func_item->func_name()));
     }
 
     if (item_type == Item::INT_ITEM)
     {
-      DBUG_PRINT("info", ("Found Item::INT_ITEM"));
-      // Item_int *intitem = (Item_int*)item;
+      Item_int *int_item = (Item_int*)item;
+      DBUG_PRINT("info", ("Found Item::INT_ITEM = %lld", int_item->val_int()));
     }
 
     if (item_type == Item::FIELD_ITEM)
     {
-      DBUG_PRINT("info", ("Found Item::FIELD_ITEM"));
+      Item_field *field_item = (Item_field*)item;
+      DBUG_PRINT("info", ("Found Item::FIELD_ITEM = %s", field_item->field_name));
     }
 
     if (item_type == Item::NULL_ITEM)
@@ -449,7 +459,8 @@ void create_condition_queue(const Item *item, void *args)
 
     if (item_type == Item::STRING_ITEM)
     {
-      DBUG_PRINT("info", ("Found Item::STRING_ITEM"));
+      Item_string *str_item = (Item_string*)item;
+      DBUG_PRINT("info", ("Found Item::STRING_ITEM = %s", str_item->name));
     }
 
     cond_vec->push_back(item);
