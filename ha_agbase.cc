@@ -402,6 +402,8 @@ int ha_agbase::rnd_end()
   DBUG_ENTER("ha_agbase::rnd_end");
   closedir(d_dir);
   got_cond = false;
+  //delete cond_tree;
+  cond_vector.clear();
   DBUG_RETURN(0);
 }
 
@@ -470,6 +472,78 @@ void create_condition_queue(const Item *item, void *args)
   }
 
   DBUG_VOID_RETURN;
+}
+
+struct cond_tree_node *tree_convert(void *qptr)
+{
+  DBUG_ENTER("ha_agbase::tree_convert");
+  struct cond_tree_node *master;
+  struct cond_tree_node *curr;
+  std::vector<const Item*> *cond_vec = (std::vector<const Item*>*)qptr;
+
+  master = (struct cond_tree_node*)malloc(sizeof(cond_tree_node));
+  curr = master;
+
+  for(std::vector<const Item*>::size_type i = 0; i != cond_vec->size(); i++)
+  {
+    DBUG_PRINT("info", ("cond_vec->size: %lu", cond_vec->size()));
+    if ((*cond_vec)[i] == NULL)
+    {
+      // ascend up the condition tree
+      curr = curr->parent;
+    } else {
+      Item::Type item_type = ((*cond_vec)[i])->type();
+      const Item *item = (*cond_vec)[i];
+      // add children to tree
+      if (item_type == Item::COND_ITEM)
+      {
+        Item_func *item_func = (Item_func*)(*cond_vec)[i];
+
+        curr->left = (struct cond_tree_node*)malloc(sizeof(struct cond_tree_node));
+        curr->left->parent = curr;
+
+        curr->left->cmp.cmp_type = get_func_type(item_func->functype());
+
+        // descend into next condition
+        curr = curr->left;
+      } else {
+        // construct a cond_cmp_data
+        curr->right = (struct cond_tree_node*)malloc(sizeof(cond_tree_node));
+        curr->right->parent = curr;
+        while ((*cond_vec)[i] != NULL)
+        {
+          Item_func *item_func;
+          Item_field *item_field;
+          Item_int *item_int;
+          item = (*cond_vec)[i];
+          item_type = ((*cond_vec)[i])->type();
+
+          switch(item_type) {
+            case Item::FUNC_ITEM:
+              item_func = (Item_func*)(*cond_vec)[i];
+              curr->right->cmp.cmp_type = get_func_type(item_func->functype());
+              break;
+            case Item::FIELD_ITEM:
+              item_field = (Item_field*)(*cond_vec)[i];
+              curr->right->cmp.col_name = item_field->field_name_or_null();
+              break;
+            case Item::INT_ITEM:
+              item_int = (Item_int*)(*cond_vec)[i];
+              curr->right->cmp.value = item_int->val_int();
+              break;
+            default:
+              break;
+          }
+
+          i++;
+
+        }
+        curr = curr->parent;
+      }
+    }
+  }
+
+  DBUG_RETURN(master);
 }
 
 bool ha_agbase::does_cond_accept_row(GifFileType *file)
@@ -893,6 +967,8 @@ const COND *ha_agbase::cond_push(const COND *cond)
 
     // Traverse the condition we got from the server and parse it into a linked list
     condition->cond->traverse_cond(&create_condition_queue, &cond_vector, Item::PREFIX);
+    cond_vector.push_back(NULL);
+    cond_tree = tree_convert(&cond_vector);
   }
   DBUG_RETURN(NULL);
 }
@@ -1008,6 +1084,10 @@ COMPARISON_TYPE get_func_type(Item_func::Functype const type)
       DBUG_RETURN(CMP_GE);
     case Item_func::NE_FUNC:
       DBUG_RETURN(CMP_NE);
+    case Item_func::COND_AND_FUNC:
+      DBUG_RETURN(CMP_AND);
+    case Item_func::COND_OR_FUNC:
+      DBUG_RETURN(CMP_OR);
     default:
       DBUG_RETURN(CMP_ERR);
   }
