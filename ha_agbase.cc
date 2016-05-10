@@ -407,19 +407,19 @@ int ha_agbase::rnd_end()
   DBUG_RETURN(0);
 }
 
-void cond_tree_traverser(const Item *item, void *args)
+bool ha_agbase::cond_tree_traverser(cond_tree_node *node, GifFileType *file)
 {
   DBUG_ENTER("ha_agbase::cond_tree_traverser");
-  DBUG_VOID_RETURN;
+  DBUG_RETURN(true);
 }
 
 void create_condition_queue(const Item *item, void *args)
 {
   DBUG_ENTER("ha_agbase::create_condition_queue");
 
+  std::vector<const Item*> *cond_vec = (std::vector<const Item*>*)args;
   if (item != NULL)
   {
-    std::vector<const Item*> *cond_vec = (std::vector<const Item*>*)args;
     Item::Type item_type = item->type();
     Item_func::Functype func_type;
 
@@ -469,6 +469,7 @@ void create_condition_queue(const Item *item, void *args)
 
   } else {
     DBUG_PRINT("info", ("Found NULL Item"));
+    cond_vec->push_back(NULL);
   }
 
   DBUG_VOID_RETURN;
@@ -481,64 +482,77 @@ struct cond_tree_node *tree_convert(void *qptr)
   struct cond_tree_node *curr;
   std::vector<const Item*> *cond_vec = (std::vector<const Item*>*)qptr;
 
-  master = (struct cond_tree_node*)malloc(sizeof(cond_tree_node));
+  master = (struct cond_tree_node*)calloc(1, sizeof(cond_tree_node));
   curr = master;
+  master->parent = master;
 
   for(std::vector<const Item*>::size_type i = 0; i != cond_vec->size(); i++)
   {
-    DBUG_PRINT("info", ("cond_vec->size: %lu", cond_vec->size()));
+  begin:
     if ((*cond_vec)[i] == NULL)
+      break;
+
+    Item::Type item_type = ((*cond_vec)[i]->type());
+    if (item_type == Item::COND_ITEM)
     {
-      // ascend up the condition tree
-      curr = curr->parent;
+      Item_func *item_func = (Item_func*)(*cond_vec)[i];
+      curr->cmp.cmp_type = get_func_type(item_func->functype());
+      curr->child = (cond_tree_node*)calloc(1, sizeof(cond_tree_node));
+      curr->child->parent = curr;
+      curr->child_count++;
+      DBUG_PRINT("info", ("Cond func = %s", item_func->func_name()));
+      curr = curr->child;
     } else {
-      Item::Type item_type = ((*cond_vec)[i])->type();
-      const Item *item = (*cond_vec)[i];
-      // add children to tree
-      if (item_type == Item::COND_ITEM)
+
+      while ((*cond_vec)[i] != NULL)
       {
-        Item_func *item_func = (Item_func*)(*cond_vec)[i];
+        Item_func *item_func;
+        Item_field *item_field;
+        Item_int *item_int;
+        item_type = ((*cond_vec)[i])->type();
 
-        curr->left = (struct cond_tree_node*)malloc(sizeof(struct cond_tree_node));
-        curr->left->parent = curr;
+        switch(item_type) {
+          case Item::FUNC_ITEM:
+            item_func = (Item_func*)(*cond_vec)[i];
+            curr->cmp.cmp_type = get_func_type(item_func->functype());
+            break;
 
-        curr->left->cmp.cmp_type = get_func_type(item_func->functype());
+          case Item::FIELD_ITEM:
+            item_field = (Item_field*)(*cond_vec)[i];
+            curr->cmp.col_name = item_field->field_name_or_null();
+            break;
 
-        // descend into next condition
-        curr = curr->left;
-      } else {
-        // construct a cond_cmp_data
-        curr->right = (struct cond_tree_node*)malloc(sizeof(cond_tree_node));
-        curr->right->parent = curr;
-        while ((*cond_vec)[i] != NULL)
-        {
-          Item_func *item_func;
-          Item_field *item_field;
-          Item_int *item_int;
-          item = (*cond_vec)[i];
-          item_type = ((*cond_vec)[i])->type();
+          case Item::INT_ITEM:
+            item_int = (Item_int*)(*cond_vec)[i];
+            curr->cmp.value = item_int->val_int();
 
-          switch(item_type) {
-            case Item::FUNC_ITEM:
-              item_func = (Item_func*)(*cond_vec)[i];
-              curr->right->cmp.cmp_type = get_func_type(item_func->functype());
-              break;
-            case Item::FIELD_ITEM:
-              item_field = (Item_field*)(*cond_vec)[i];
-              curr->right->cmp.col_name = item_field->field_name_or_null();
-              break;
-            case Item::INT_ITEM:
-              item_int = (Item_int*)(*cond_vec)[i];
-              curr->right->cmp.value = item_int->val_int();
-              break;
-            default:
-              break;
-          }
+            DBUG_PRINT("info", ("func = %s | field = %s | int = %lld", item_func->func_name(), item_field->field_name, item_int->value));
 
-          i++;
+            if ((*cond_vec)[i+1] != NULL && (*cond_vec)[i+1]->type() == Item::FUNC_ITEM)
+            {
+              curr->sibling = (cond_tree_node*)calloc(1, sizeof(cond_tree_node));
+              curr->sibling->parent = curr->parent;
+              curr->parent->child_count++;
+              curr = curr->sibling;
+            } else {
+              while(curr->cmp.cmp_type != CMP_AND && curr->cmp.cmp_type != CMP_OR)
+              {
+                curr = curr->parent;
+              }
+              curr->sibling = (cond_tree_node*)calloc(1, sizeof(cond_tree_node));
+              curr->sibling->parent = curr->parent;
+              curr->parent->child_count++;
+              curr = curr->sibling;
+              i += 2;
+              goto begin;
+            }
+            break;
 
+          default:
+            break;
         }
-        curr = curr->parent;
+
+        i++;
       }
     }
   }
@@ -552,14 +566,11 @@ bool ha_agbase::does_cond_accept_row(GifFileType *file)
   bool row_is_match = true;
   Item_bool_func2 *tmp_cond = static_cast<Item_bool_func2 *>(const_cast<COND*>(condition->cond));
 
-  // Establish the condition tree traversal cond_tree_callback function
-  void (*cond_tree_callback)(const Item *, void*);
-  cond_tree_callback = &cond_tree_traverser;
-
   if (tmp_cond->functype() != Item_func::COND_AND_FUNC &&
       tmp_cond->functype() != Item_func::COND_OR_FUNC)
   {
     // Simple condition
+    DBUG_PRINT("info", ("ha_agbase::does_cond_accept_row: Simple Condition"));
     Item **arguments;
     COND_CMP_DATA simple_cond;
     arguments = tmp_cond->arguments();
@@ -568,13 +579,9 @@ bool ha_agbase::does_cond_accept_row(GifFileType *file)
     simple_cond.cmp_type = get_func_type(tmp_cond->functype());
 
     row_is_match = does_item_fulfil_cond(simple_cond, file);
+    //row_is_match = cond_tree_traverser(cond_tree, file);
   } else {
-    // do wacky tree traversal
-    cond_tree_ctx root_ctx;
-    root_ctx.ret = true;
-    root_ctx.cond = condition;
-
-    tmp_cond->traverse_cond(cond_tree_callback, &root_ctx, Item::PREFIX);
+    // Check the row against the condition tree
   }
 
   DBUG_RETURN(row_is_match);

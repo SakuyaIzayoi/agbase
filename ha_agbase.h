@@ -47,9 +47,10 @@ agbase_condition_s
 } AGBASE_CONDITION;
 
 struct cond_tree_node {
-  struct cond_tree_node* left;
-  struct cond_tree_node* right;
+  struct cond_tree_node* child;
+  struct cond_tree_node* sibling;
   struct cond_tree_node* parent;
+  unsigned int child_count;
   COND_CMP_DATA cmp;
 };
 
@@ -144,6 +145,7 @@ class ha_agbase : public handler
                 void cond_pop();
                 bool does_cond_accept_row(GifFileType *file);
                 bool does_item_fulfil_cond(COND_CMP_DATA &data, GifFileType *file);
+                bool cond_tree_traverser(cond_tree_node *node, GifFileType *file);
 
                 // Utilities
                 bool has_gif_extension(char const *name);
