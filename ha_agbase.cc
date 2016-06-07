@@ -6,14 +6,30 @@
 #include "ha_agbase.h"
 #include <mysql/plugin.h>
 #include "sql_class.h"
-#include <gif_lib.h>
 #include <iostream>
+#include <memory>
 #include <my_global.h>
 #include <my_dbug.h>
 
+#include <my_decimal.h>
+#include <sql_udf.h>
+#include <item_row.h>
+#include <item_sum.h>
+#include <item_cmpfunc.h>
+
+COMPARISON_TYPE get_func_type(Item_func::Functype const);
+void create_condition_queue(const Item *item, void *args);
+
+struct cond_tree_ctx
+{
+  bool ret;
+  GifFileType *file;
+  AGBASE_CONDITION *cond;
+};
+
 static handler *agbase_create_handler(handlerton *hton,
-										TABLE_SHARE *table,
-										MEM_ROOT *mem_root);
+                                      TABLE_SHARE *table,
+                                      MEM_ROOT *mem_root);
 
 handlerton *agbase_hton;
 mysql_mutex_t agbase_mutex;
@@ -133,6 +149,7 @@ static handler* agbase_create_handler(handlerton *hton,
 ha_agbase::ha_agbase(handlerton *hton, TABLE_SHARE *table_arg)
   :handler(hton, table_arg)
 {
+  cond_check = false;
   buffer.set((char*)byte_buffer, IO_SIZE, &my_charset_bin);
 }
 
@@ -157,6 +174,8 @@ int ha_agbase::open(const char *name, int mode, uint test_if_locked)
   if (!(share = get_share()))
     DBUG_RETURN(1);
   thr_lock_data_init(&share->lock,&lock,NULL);
+  condition = NULL;
+  got_cond = false;
 
 #ifndef DBUG_OFF
   ha_table_option_struct *options= table->s->option_struct;
@@ -382,9 +401,219 @@ int ha_agbase::rnd_end()
 {
   DBUG_ENTER("ha_agbase::rnd_end");
   closedir(d_dir);
+  got_cond = false;
+  //delete cond_tree;
+  cond_vector.clear();
   DBUG_RETURN(0);
 }
 
+bool ha_agbase::cond_tree_traverser(cond_tree_node *node, GifFileType *file)
+{
+  DBUG_ENTER("ha_agbase::cond_tree_traverser");
+  bool sibling_result;
+  bool result;
+  cond_tree_node *subnode;
+
+  if (node->cmp.cmp_type == CMP_AND || node->cmp.cmp_type == CMP_OR)
+  {
+    subnode = node->child;
+    if (node->cmp.cmp_type == CMP_AND)
+    {
+      sibling_result = cond_tree_traverser(node->child, file);
+      for (unsigned int i = 1; i < node->child_count; i++)
+      {
+        sibling_result = sibling_result && cond_tree_traverser(subnode->sibling, file);
+        subnode = subnode->sibling;
+      }
+      result = sibling_result;
+    } else {
+      sibling_result = cond_tree_traverser(node->child, file);
+      for (unsigned int i = 1; i < node->child_count; i++)
+      {
+        sibling_result = sibling_result || cond_tree_traverser(subnode->sibling, file);
+        subnode = subnode->sibling;
+      }
+      result = sibling_result;
+    }
+  } else {
+    result = does_item_fulfil_cond(node->cmp, file);
+  }
+
+  DBUG_RETURN(result);
+}
+
+void create_condition_queue(const Item *item, void *args)
+{
+  DBUG_ENTER("ha_agbase::create_condition_queue");
+
+  std::vector<const Item*> *cond_vec = (std::vector<const Item*>*)args;
+  if (item != NULL)
+  {
+    Item::Type item_type = item->type();
+    Item_func::Functype func_type;
+
+    if (item_type == Item::COND_ITEM)
+    {
+      DBUG_PRINT("info", ("Found Item::COND_ITEM"));
+      Item_cond *cond_item = (Item_cond*)item;
+      func_type = cond_item->functype();
+      if (func_type == Item_func::COND_AND_FUNC)
+        DBUG_PRINT("info", ("Found COND_AND_FUNC"));
+      else
+        if (func_type == Item_func::COND_OR_FUNC)
+          DBUG_PRINT("info", ("Found COND_OR_FUNC"));
+    }
+
+    if (item_type == Item::FUNC_ITEM)
+    {
+      Item_func *func_item = (Item_func*)item;
+      func_type = func_item->functype();
+      DBUG_PRINT("info", ("Found Item::FUNC_ITEM = [%s]", func_item->func_name()));
+    }
+
+    if (item_type == Item::INT_ITEM)
+    {
+      Item_int *int_item = (Item_int*)item;
+      DBUG_PRINT("info", ("Found Item::INT_ITEM = %lld", int_item->val_int()));
+    }
+
+    if (item_type == Item::FIELD_ITEM)
+    {
+      Item_field *field_item = (Item_field*)item;
+      DBUG_PRINT("info", ("Found Item::FIELD_ITEM = %s", field_item->field_name));
+    }
+
+    if (item_type == Item::NULL_ITEM)
+    {
+      DBUG_PRINT("info", ("Found Item::NULL_ITEM"));
+    }
+
+    if (item_type == Item::STRING_ITEM)
+    {
+      Item_string *str_item = (Item_string*)item;
+      DBUG_PRINT("info", ("Found Item::STRING_ITEM = %s", str_item->name));
+    }
+
+    cond_vec->push_back(item);
+
+  } else {
+    DBUG_PRINT("info", ("Found NULL Item"));
+    cond_vec->push_back(NULL);
+  }
+
+  DBUG_VOID_RETURN;
+}
+
+struct cond_tree_node *tree_convert(void *qptr)
+{
+  DBUG_ENTER("ha_agbase::tree_convert");
+  struct cond_tree_node *master;
+  struct cond_tree_node *curr;
+  std::vector<const Item*> *cond_vec = (std::vector<const Item*>*)qptr;
+
+  master = (struct cond_tree_node*)calloc(1, sizeof(cond_tree_node));
+  curr = master;
+  master->parent = master;
+
+  for(std::vector<const Item*>::size_type i = 0; i != cond_vec->size(); i++)
+  {
+  begin:
+    if ((*cond_vec)[i] == NULL)
+      break;
+
+    Item::Type item_type = ((*cond_vec)[i]->type());
+    if (item_type == Item::COND_ITEM)
+    {
+      Item_func *item_func = (Item_func*)(*cond_vec)[i];
+      curr->cmp.cmp_type = get_func_type(item_func->functype());
+      curr->child = (cond_tree_node*)calloc(1, sizeof(cond_tree_node));
+      curr->child->parent = curr;
+      curr->child_count++;
+      DBUG_PRINT("info", ("Cond func = %s", item_func->func_name()));
+      curr = curr->child;
+    } else {
+
+      while ((*cond_vec)[i] != NULL)
+      {
+        Item_func *item_func;
+        Item_field *item_field;
+        Item_int *item_int;
+        item_type = ((*cond_vec)[i])->type();
+
+        switch(item_type) {
+          case Item::FUNC_ITEM:
+            item_func = (Item_func*)(*cond_vec)[i];
+            curr->cmp.cmp_type = get_func_type(item_func->functype());
+            break;
+
+          case Item::FIELD_ITEM:
+            item_field = (Item_field*)(*cond_vec)[i];
+            curr->cmp.col_name = item_field->field_name_or_null();
+            break;
+
+          case Item::INT_ITEM:
+            item_int = (Item_int*)(*cond_vec)[i];
+            curr->cmp.value = item_int->val_int();
+
+            DBUG_PRINT("info", ("func = %s | field = %s | int = %lld", item_func->func_name(), item_field->field_name, item_int->value));
+
+            if ((*cond_vec)[i+1] != NULL && (*cond_vec)[i+1]->type() == Item::FUNC_ITEM)
+            {
+              curr->sibling = (cond_tree_node*)calloc(1, sizeof(cond_tree_node));
+              curr->sibling->parent = curr->parent;
+              curr->parent->child_count++;
+              curr = curr->sibling;
+            } else {
+              while(curr->cmp.cmp_type != CMP_AND && curr->cmp.cmp_type != CMP_OR)
+              {
+                curr = curr->parent;
+              }
+              curr->sibling = (cond_tree_node*)calloc(1, sizeof(cond_tree_node));
+              curr->sibling->parent = curr->parent;
+              curr->parent->child_count++;
+              curr = curr->sibling;
+              i += 2;
+              goto begin;
+            }
+            break;
+
+          default:
+            break;
+        }
+
+        i++;
+      }
+    }
+  }
+
+  DBUG_RETURN(master);
+}
+
+bool ha_agbase::does_cond_accept_row(GifFileType *file)
+{
+  DBUG_ENTER("ha_agbase::does_cond_accept_row");
+  bool row_is_match = true;
+  Item_bool_func2 *tmp_cond = static_cast<Item_bool_func2 *>(const_cast<COND*>(condition->cond));
+
+  if (tmp_cond->functype() != Item_func::COND_AND_FUNC &&
+      tmp_cond->functype() != Item_func::COND_OR_FUNC)
+  {
+    // Simple condition
+    DBUG_PRINT("info", ("ha_agbase::does_cond_accept_row: Simple Condition"));
+    Item **arguments;
+    COND_CMP_DATA simple_cond;
+    arguments = tmp_cond->arguments();
+    simple_cond.col_name = ((Item_field*)arguments[0])->name;
+    simple_cond.value = ((Item_int*)arguments[1])->value;
+    simple_cond.cmp_type = get_func_type(tmp_cond->functype());
+
+    row_is_match = does_item_fulfil_cond(simple_cond, file);
+  } else {
+    row_is_match = cond_tree_traverser(cond_tree, file);
+  }
+
+  DBUG_RETURN(row_is_match);
+}
 
 /**
   @brief
@@ -414,6 +643,7 @@ int ha_agbase::rnd_next(uchar *buf)
 
   if (d_dir != NULL)
   {
+    get:
     if ((dirent = readdir(d_dir)) != NULL)
     {
       // Only operate on gif files
@@ -427,32 +657,40 @@ int ha_agbase::rnd_next(uchar *buf)
         dirent = readdir(d_dir);
       }
 
-      // Prepeare the directory string
+      // Prepare the directory string
       dirstring.append("/home/ag/misc/agbase/");
       dirstring.append(dirent->d_name);
       GifFileType *file = DGifOpenFileName(dirstring.c_ptr());
 
       if (file != NULL)
       {
-        // No null bytes to pack because all fields are NOT NULL
+        if (got_cond)
+        {
+          if(!does_cond_accept_row(file))
+          {
+            dirstring.length(0);
+            goto get;
+          }
+        }
+
+        // Pack in the null bytes
         memset(buf, 0, table->s->null_bytes);
 
         for (Field **field = table->field; *field; field++)
         {
-          buffer.length(0);
+            buffer.length(0);
+            buffer.append(dirent->d_name);
 
-          buffer.append(dirent->d_name);
-
-          if (!strcmp((*field)->field_name, "name"))
-          {
-            (*field)->store(buffer.ptr(), buffer.length(), buffer.charset());
-          }
-          else
-            if(!strcmp((*field)->field_name, "height"))
-              (*field)->store(file->SHeight);
+            if (!strcmp((*field)->field_name, "name"))
+            {
+              (*field)->store(buffer.ptr(), buffer.length(), buffer.charset());
+            }
             else
-            if (!strcmp((*field)->field_name, "width"))
-              (*field)->store(file->SWidth);
+              if(!strcmp((*field)->field_name, "height"))
+                (*field)->store(file->SHeight);
+              else
+              if (!strcmp((*field)->field_name, "width"))
+                (*field)->store(file->SWidth);
         }
       }
       stats.records++;
@@ -747,6 +985,43 @@ int ha_agbase::create(const char *name, TABLE *table_arg,
   DBUG_RETURN(0);
 }
 
+const COND *ha_agbase::cond_push(const COND *cond)
+{
+  DBUG_ENTER("ha_agbase::cond_push");
+  cond_check = false;
+
+  if (cond)
+  {
+    AGBASE_CONDITION *tmp_cond;
+    if (!(tmp_cond = (AGBASE_CONDITION*)malloc(sizeof(AGBASE_CONDITION*))))
+      DBUG_RETURN(cond);
+
+    tmp_cond->cond = (COND *)cond;
+    condition = tmp_cond;
+    got_cond = true;
+
+    // Traverse the condition we got from the server and parse it into a linked list
+    condition->cond->traverse_cond(&create_condition_queue, &cond_vector, Item::PREFIX);
+    cond_vector.push_back(NULL);
+    if (cond_vector.front()->type() == Item::COND_ITEM)
+    {
+      cond_tree = tree_convert(&cond_vector);
+    }
+  }
+  DBUG_RETURN(NULL);
+}
+
+void ha_agbase::cond_pop()
+{
+  DBUG_ENTER("ha_agbase::cond_pop");
+  if (condition)
+  {
+    AGBASE_CONDITION *tmp_cond = condition->next;
+    free(condition);
+    condition = tmp_cond;
+  }
+  DBUG_VOID_RETURN;
+}
 
 /**
   check_if_supported_inplace_alter() is used to ask the engine whether
@@ -825,11 +1100,94 @@ ha_agbase::check_if_supported_inplace_alter(TABLE* altered_table,
   DBUG_RETURN(HA_ALTER_INPLACE_EXCLUSIVE_LOCK);
 }
 
-bool
-ha_agbase::has_gif_extension(char const *name)
+bool ha_agbase::has_gif_extension(char const *name)
 {
   size_t len = strlen(name);
   return len > 4 && strcmp(name + len - 4, ".gif") == 0;
+}
+
+COMPARISON_TYPE get_func_type(Item_func::Functype const type)
+{
+  DBUG_ENTER("ha_agbase::get_func_type");
+  switch(type) {
+    case Item_func::EQ_FUNC:
+      DBUG_RETURN(CMP_EQ);
+    case Item_func::LT_FUNC:
+      DBUG_RETURN(CMP_LT);
+    case Item_func::GT_FUNC:
+      DBUG_RETURN(CMP_GT);
+    case Item_func::LE_FUNC:
+      DBUG_RETURN(CMP_LE);
+    case Item_func::GE_FUNC:
+      DBUG_RETURN(CMP_GE);
+    case Item_func::NE_FUNC:
+      DBUG_RETURN(CMP_NE);
+    case Item_func::COND_AND_FUNC:
+      DBUG_RETURN(CMP_AND);
+    case Item_func::COND_OR_FUNC:
+      DBUG_RETURN(CMP_OR);
+    default:
+      DBUG_RETURN(CMP_ERR);
+  }
+}
+
+bool ha_agbase::does_item_fulfil_cond(COND_CMP_DATA &cmp_data, GifFileType *file)
+{
+  bool ret = false;
+  switch(cmp_data.cmp_type)
+  {
+    case CMP_EQ:
+      if (!strcmp(cmp_data.col_name, "width"))
+        if (file->SWidth == cmp_data.value)
+          ret = true;
+      if (!strcmp(cmp_data.col_name, "height"))
+        if (file->SHeight == cmp_data.value)
+          ret = true;
+      break;
+    case CMP_GT:
+      if (!strcmp(cmp_data.col_name, "width"))
+        if (file->SWidth > cmp_data.value)
+          ret = true;
+      if (!strcmp(cmp_data.col_name, "height"))
+        if (file->SHeight > cmp_data.value)
+          ret = true;
+      break;
+    case CMP_LT:
+      if (!strcmp(cmp_data.col_name, "width"))
+        if (file->SWidth < cmp_data.value)
+          ret = true;
+      if (!strcmp(cmp_data.col_name, "height"))
+        if (file->SHeight < cmp_data.value)
+          ret = true;
+      break;
+    case CMP_GE:
+      if (!strcmp(cmp_data.col_name, "width"))
+        if (file->SWidth >= cmp_data.value)
+          ret = true;
+      if (!strcmp(cmp_data.col_name, "height"))
+        if (file->SHeight >= cmp_data.value)
+          ret = true;
+      break;
+    case CMP_LE:
+      if (!strcmp(cmp_data.col_name, "width"))
+        if (file->SWidth <= cmp_data.value)
+          ret = true;
+      if (!strcmp(cmp_data.col_name, "height"))
+        if (file->SHeight <= cmp_data.value)
+          ret = true;
+      break;
+    case CMP_NE:
+      if (!strcmp(cmp_data.col_name, "width"))
+        if (file->SWidth != cmp_data.value)
+          ret = true;
+      if (!strcmp(cmp_data.col_name, "height"))
+        if (file->SHeight != cmp_data.value)
+          ret = true;
+      break;
+    default:
+      break;
+  }
+  return ret;
 }
 
 struct st_mysql_storage_engine agbase_storage_engine=
