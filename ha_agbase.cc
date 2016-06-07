@@ -410,7 +410,36 @@ int ha_agbase::rnd_end()
 bool ha_agbase::cond_tree_traverser(cond_tree_node *node, GifFileType *file)
 {
   DBUG_ENTER("ha_agbase::cond_tree_traverser");
-  DBUG_RETURN(true);
+  bool sibling_result;
+  bool result;
+  cond_tree_node *subnode;
+
+  if (node->cmp.cmp_type == CMP_AND || node->cmp.cmp_type == CMP_OR)
+  {
+    subnode = node->child;
+    if (node->cmp.cmp_type == CMP_AND)
+    {
+      sibling_result = cond_tree_traverser(node->child, file);
+      for (unsigned int i = 1; i < node->child_count; i++)
+      {
+        sibling_result = sibling_result && cond_tree_traverser(subnode->sibling, file);
+        subnode = subnode->sibling;
+      }
+      result = sibling_result;
+    } else {
+      sibling_result = cond_tree_traverser(node->child, file);
+      for (unsigned int i = 1; i < node->child_count; i++)
+      {
+        sibling_result = sibling_result || cond_tree_traverser(subnode->sibling, file);
+        subnode = subnode->sibling;
+      }
+      result = sibling_result;
+    }
+  } else {
+    result = does_item_fulfil_cond(node->cmp, file);
+  }
+
+  DBUG_RETURN(result);
 }
 
 void create_condition_queue(const Item *item, void *args)
@@ -579,9 +608,8 @@ bool ha_agbase::does_cond_accept_row(GifFileType *file)
     simple_cond.cmp_type = get_func_type(tmp_cond->functype());
 
     row_is_match = does_item_fulfil_cond(simple_cond, file);
-    //row_is_match = cond_tree_traverser(cond_tree, file);
   } else {
-    // Check the row against the condition tree
+    row_is_match = cond_tree_traverser(cond_tree, file);
   }
 
   DBUG_RETURN(row_is_match);
