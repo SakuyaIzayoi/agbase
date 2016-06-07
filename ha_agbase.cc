@@ -975,7 +975,10 @@ const COND *ha_agbase::cond_push(const COND *cond)
     // Traverse the condition we got from the server and parse it into a linked list
     condition->cond->traverse_cond(&create_condition_queue, &cond_vector, Item::PREFIX);
     cond_vector.push_back(NULL);
-    cond_tree = tree_convert(&cond_vector);
+    if (cond_vector.front()->type() == Item::COND_ITEM)
+    {
+      cond_tree = tree_convert(&cond_vector);
+    }
   }
   DBUG_RETURN(NULL);
 }
