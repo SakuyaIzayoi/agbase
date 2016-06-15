@@ -422,16 +422,21 @@ bool ha_agbase::cond_tree_traverser(cond_tree_node *node, GifFileType *file)
       sibling_result = cond_tree_traverser(node->child, file);
       for (unsigned int i = 1; i < node->child_count; i++)
       {
-        sibling_result = sibling_result && cond_tree_traverser(subnode->sibling, file);
-        subnode = subnode->sibling;
+        if (subnode->sibling != NULL)
+        {
+          sibling_result = sibling_result && cond_tree_traverser(subnode->sibling, file);
+          subnode = subnode->sibling;
+        }
       }
       result = sibling_result;
     } else {
       sibling_result = cond_tree_traverser(node->child, file);
       for (unsigned int i = 1; i < node->child_count; i++)
       {
-        sibling_result = sibling_result || cond_tree_traverser(subnode->sibling, file);
-        subnode = subnode->sibling;
+        if (subnode->sibling != NULL) {
+          sibling_result = sibling_result || cond_tree_traverser(subnode->sibling, file);
+          subnode = subnode->sibling;
+        }
       }
       result = sibling_result;
     }
